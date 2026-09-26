@@ -82,7 +82,7 @@ T_Chunks: TypeAlias = T_ChunkDim | Mapping[Any, T_ChunkDim] | tuple[T_ChunkDim, 
 DimType = TypeVar("DimType", bound=Hashable)
 DimType_co = TypeVar("DimType_co", bound=Hashable, covariant=True)
 DimsLike: TypeAlias = Union[
-    Iterable[DimType_co], None, EllipsisType
+    Iterable[DimType_co], EllipsisType, None
 ]  # single str is also allowed, but luckily str = Iterable[str]
 
 # https://data-apis.org/array-api/latest/API_specification/indexing.html

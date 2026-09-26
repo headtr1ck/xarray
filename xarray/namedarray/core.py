@@ -955,7 +955,7 @@ class NamedArray(
             raise ValueError("cannot supply both 'axis' and 'dim' arguments")
 
         if dim is not None:
-            axis = self.get_axis_num(cast(Iterable[DimType_co], dim))
+            axis = self.get_axis_num(dim)
 
         with warnings.catch_warnings():
             warnings.filterwarnings(
