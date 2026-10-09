@@ -108,6 +108,88 @@ class TestDataArrayRolling:
             actual = getattr(rolling_obj, name)()
         np.testing.assert_array_equal(actual.values, expected)
 
+    @pytest.mark.parametrize("name", ["idxmin", "idxmax"])
+    @pytest.mark.parametrize("center", [True, False])
+    @pytest.mark.parametrize("size", [1, 2, 3, 4, 10])
+    @pytest.mark.parametrize("min_periods", [1, None])
+    @pytest.mark.parametrize(
+        "backend",
+        [
+            "numpy",
+            pytest.param("bottleneck", marks=requires_bottleneck),
+            pytest.param("dask", marks=requires_dask),
+        ],
+    )
+    def test_rolling_idxminmax_vs_iter(
+        self, name: str, center: bool, size: int, min_periods: int, backend: str
+    ) -> None:
+        da = DataArray(
+            [3.0, 1, 4, np.nan, 5, 9, 2, 6, 5.5, np.nan, 8, 7],
+            dims="time",
+            coords={"time": np.arange(12) * 10 + 5},
+        )
+        rolling_obj = da.rolling(time=size, center=center, min_periods=min_periods)
+        expected = [getattr(window, name)("time").item() for _, window in rolling_obj]
+
+        if backend == "dask":
+            rolling_obj = da.chunk(time=6).rolling(
+                time=size, center=center, min_periods=min_periods
+            )
+        with set_options(use_bottleneck=backend != "numpy", use_numbagg=False):
+            actual = getattr(rolling_obj, name)()
+        assert_identical(actual["time"], da["time"])
+        np.testing.assert_array_equal(actual.values, expected)
+
+    def test_cumulative_idxminmax(self) -> None:
+        times = pd.date_range("2000-01-01", periods=5)
+        da = DataArray([1, 2, 1.5, 3.5, 4], dims="time", coords={"time": times})
+
+        actual = da.cumulative("time").idxmax()
+        expected = DataArray(times[[0, 1, 1, 3, 4]], dims="time", coords=da.coords)
+        assert_identical(actual, expected)
+
+        actual = da.cumulative("time").idxmin()
+        expected = DataArray(times[[0, 0, 0, 0, 0]], dims="time", coords=da.coords)
+        assert_identical(actual, expected)
+
+    def test_rolling_idxminmax_fill_value(self) -> None:
+        da = DataArray(
+            [3.0, 1, 4, 1.5],
+            dims="time",
+            coords={"time": [10, 20, 30, 40]},
+            attrs={"units": "m"},
+            name="foo",
+        )
+        actual = da.rolling(time=2).idxmax()
+        expected = DataArray(
+            [np.nan, 10, 30, 30],
+            dims="time",
+            coords=da.coords,
+            attrs={"units": "m"},
+            name="foo",
+        )
+        assert_identical(actual, expected)
+
+        actual = da.rolling(time=2).idxmax(fill_value=-1, keep_attrs=False)
+        expected = DataArray(
+            [-1, 10, 30, 30], dims="time", coords=da.coords, name="foo"
+        )
+        assert_identical(actual, expected)
+
+        times = pd.date_range("2000-01-01", periods=4)
+        actual = da.assign_coords(time=times).rolling(time=2).idxmax()
+        assert actual.dtype == times.dtype
+        assert np.isnat(actual.values[0])
+
+    def test_rolling_idxminmax_errors(self) -> None:
+        da = DataArray([[3.0, 1], [4, 1.5]], dims=("x", "y"))
+        with pytest.raises(KeyError, match=r"'x' is not one of the coordinates"):
+            da.rolling(x=2).idxmax()
+
+        da = da.assign_coords(x=[0, 1], y=[0, 1])
+        with pytest.raises(ValueError, match=r"single dimension"):
+            da.rolling(x=2, y=2).idxmax()
+
     @pytest.mark.parametrize("da", (1,), indirect=True)
     def test_rolling_repr(self, da) -> None:
         rolling_obj = da.rolling(time=7)
@@ -628,6 +710,29 @@ class TestDataArrayRollingExp:
 
 
 class TestDatasetRolling:
+    @pytest.mark.parametrize("name", ["idxmin", "idxmax"])
+    def test_rolling_idxminmax(self, name: str) -> None:
+        ds = Dataset(
+            {
+                "a": ("time", [3.0, 1, 4, 1.5, 5]),
+                "b": (("x", "time"), [[2.0, 7, 1, 8, 2], [8, 1, np.nan, 2, 8]]),
+                "c": ("x", [1, 2]),
+            },
+            coords={"time": [10, 20, 30, 40, 50], "x": [0, 1]},
+            attrs={"foo": "bar"},
+        )
+        rolling_obj = ds.rolling(time=3, min_periods=1)
+        actual = getattr(rolling_obj, name)()
+        expected = Dataset(
+            {
+                "a": getattr(ds["a"].rolling(time=3, min_periods=1), name)(),
+                "b": getattr(ds["b"].rolling(time=3, min_periods=1), name)(),
+                "c": ds["c"],
+            },
+            attrs={"foo": "bar"},
+        )
+        assert_identical(actual, expected)
+
     @pytest.mark.parametrize(
         "funcname, argument",
         [

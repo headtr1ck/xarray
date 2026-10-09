@@ -955,6 +955,23 @@ def _ensure_numeric(data: Dataset | DataArray) -> Dataset | DataArray:
         return to_floatable(data)
 
 
+def _take_coord_labels(array, dim: Hashable, index):
+    """Replace the integer positions along ``dim`` in ``index`` with the
+    corresponding labels of the coordinate ``dim`` of ``array``."""
+    # Handle chunked arrays (e.g. dask).
+    coord = array[dim]._variable.to_base_variable()
+    if is_chunked_array(array.data):
+        chunkmanager = get_chunked_array_type(array.data)
+        coord_array = chunkmanager.from_array(
+            array[dim].data, chunks=((array.sizes[dim],),)
+        )
+        coord = coord.copy(data=coord_array)
+    else:
+        coord = coord.copy(data=to_like_array(array[dim].data, array.data))
+
+    return index._replace(coord[(index.variable,)])
+
+
 def _calc_idxminmax(
     *,
     array,
@@ -998,18 +1015,7 @@ def _calc_idxminmax(
     # This will run argmin or argmax.
     index = func(array, dim=dim, axis=None, keep_attrs=keep_attrs, skipna=skipna)
 
-    # Handle chunked arrays (e.g. dask).
-    coord = array[dim]._variable.to_base_variable()
-    if is_chunked_array(array.data):
-        chunkmanager = get_chunked_array_type(array.data)
-        coord_array = chunkmanager.from_array(
-            array[dim].data, chunks=((array.sizes[dim],),)
-        )
-        coord = coord.copy(data=coord_array)
-    else:
-        coord = coord.copy(data=to_like_array(array[dim].data, array.data))
-
-    res = index._replace(coord[(index.variable,)]).rename(dim)
+    res = _take_coord_labels(array, dim, index).rename(dim)
 
     if skipna or (skipna is None and array.dtype.kind in na_dtypes):
         # Put the NaN values back in after removing them.

@@ -17,6 +17,8 @@ Dataset
    DatasetRolling.argmax
    DatasetRolling.argmin
    DatasetRolling.count
+   DatasetRolling.idxmax
+   DatasetRolling.idxmin
    DatasetRolling.max
    DatasetRolling.mean
    DatasetRolling.median
@@ -39,6 +41,8 @@ DataArray
    DataArrayRolling.argmax
    DataArrayRolling.argmin
    DataArrayRolling.count
+   DataArrayRolling.idxmax
+   DataArrayRolling.idxmin
    DataArrayRolling.max
    DataArrayRolling.mean
    DataArrayRolling.median

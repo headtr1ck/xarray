@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, TypeVar, override
 import numpy as np
 
 from xarray.compat import dask_array_ops
+from xarray.computation import computation
 from xarray.core import dtypes, duck_array_ops, utils
 from xarray.core.options import OPTIONS, _get_keep_attrs
 from xarray.core.types import CoarsenBoundaryOptions, SideOptions, T_Xarray
@@ -18,6 +19,7 @@ from xarray.core.utils import (
     is_duck_dask_array,
     module_available,
 )
+from xarray.namedarray.pycompat import is_chunked_array
 from xarray.util.deprecation_helpers import _deprecate_positional_args
 
 try:
@@ -275,6 +277,97 @@ class Rolling[T_Xarray: (DataArray, Dataset)]:
         return rolling_count.where(enough_periods)
 
     count.__doc__ = _ROLLING_REDUCE_DOCSTRING_TEMPLATE.format(name="count")
+
+    def _idxminmax(
+        self, name: str, fill_value: Any, keep_attrs: bool | None
+    ) -> T_Xarray:
+        raise NotImplementedError()
+
+    def idxmin(
+        self, *, fill_value: Any = dtypes.NA, keep_attrs: bool | None = None
+    ) -> T_Xarray:
+        """Return the coordinate label of the minimum value in each window.
+
+        In comparison to ``argmin``, this returns the coordinate label along the
+        rolling dimension while ``argmin`` returns the index within the window.
+        Missing values are skipped.
+
+        Parameters
+        ----------
+        fill_value : Any, default: NaN
+            Value to be filled for windows with fewer than ``min_periods`` values.
+            The fill value and result are automatically converted to a compatible
+            dtype if possible.
+        keep_attrs : bool, default: None
+            If True, the attributes (``attrs``) will be copied from the original
+            object to the new one. If False, the new object will be returned
+            without attributes. If None uses the global default.
+
+        Returns
+        -------
+        reduced : same type as caller
+            New object with the coordinate labels of the minimum of each window.
+
+        Examples
+        --------
+        >>> da = xr.DataArray(
+        ...     [1, 2, 1.5, 3.5, 4, 0], dims="x", coords={"x": [0, 10, 20, 30, 40, 50]}
+        ... )
+        >>> da.rolling(x=3).idxmin()
+        <xarray.DataArray (x: 6)> Size: 48B
+        array([nan, nan,  0., 20., 20., 50.])
+        Coordinates:
+          * x        (x) int64 48B 0 10 20 30 40 50
+        >>> da.cumulative("x").idxmin()
+        <xarray.DataArray (x: 6)> Size: 48B
+        array([ 0,  0,  0,  0,  0, 50])
+        Coordinates:
+          * x        (x) int64 48B 0 10 20 30 40 50
+        """
+        return self._idxminmax("idxmin", fill_value=fill_value, keep_attrs=keep_attrs)
+
+    def idxmax(
+        self, *, fill_value: Any = dtypes.NA, keep_attrs: bool | None = None
+    ) -> T_Xarray:
+        """Return the coordinate label of the maximum value in each window.
+
+        In comparison to ``argmax``, this returns the coordinate label along the
+        rolling dimension while ``argmax`` returns the index within the window.
+        Missing values are skipped.
+
+        Parameters
+        ----------
+        fill_value : Any, default: NaN
+            Value to be filled for windows with fewer than ``min_periods`` values.
+            The fill value and result are automatically converted to a compatible
+            dtype if possible.
+        keep_attrs : bool, default: None
+            If True, the attributes (``attrs``) will be copied from the original
+            object to the new one. If False, the new object will be returned
+            without attributes. If None uses the global default.
+
+        Returns
+        -------
+        reduced : same type as caller
+            New object with the coordinate labels of the maximum of each window.
+
+        Examples
+        --------
+        >>> da = xr.DataArray(
+        ...     [1, 2, 1.5, 3.5, 4, 0], dims="x", coords={"x": [0, 10, 20, 30, 40, 50]}
+        ... )
+        >>> da.rolling(x=3).idxmax()
+        <xarray.DataArray (x: 6)> Size: 48B
+        array([nan, nan, 10., 30., 40., 40.])
+        Coordinates:
+          * x        (x) int64 48B 0 10 20 30 40 50
+        >>> da.cumulative("x").idxmax()
+        <xarray.DataArray (x: 6)> Size: 48B
+        array([ 0, 10, 10, 30, 40, 40])
+        Coordinates:
+          * x        (x) int64 48B 0 10 20 30 40 50
+        """
+        return self._idxminmax("idxmax", fill_value=fill_value, keep_attrs=keep_attrs)
 
     def _mapping_to_list(
         self,
@@ -767,6 +860,28 @@ class DataArrayRolling(Rolling["DataArray"]):
             result = self._unpad_window_index(result)
         return result
 
+    def _window_starts(self) -> np.ndarray:
+        """Position of the first element of each (padded) window along the
+        rolling dimension, which is negative for windows that extend beyond the
+        start of the array.
+        """
+        # multiple rolling dimensions are not supported by argmin/argmax
+        (dim,) = self.dim
+        (window,) = self.window
+        (center,) = self.center
+        # consistent with the padding in Variable.rolling_window
+        left = window // 2 if center else window - 1
+        return np.arange(self.obj.sizes[dim]) - left
+
+    def _shift_window_index(self, result: DataArray, shift: np.ndarray) -> DataArray:
+        """Add ``shift`` along the rolling dimension to the indices in ``result``."""
+        if not shift.any():
+            return result
+        axis = result.get_axis_num(self.dim[0])
+        shift = shift.reshape((-1,) + (1,) * (result.ndim - axis - 1))
+        shift = duck_array_ops.astype(shift, result.dtype)
+        return result.copy(data=result.data + shift)
+
     def _unpad_window_index(self, result: DataArray) -> DataArray:
         """Make indices within the padded windows relative to the first value of
         each window that lies inside the array (GH #11336).
@@ -775,19 +890,38 @@ class DataArrayRolling(Rolling["DataArray"]):
         which would otherwise be counted. E.g. ``cumulative`` uses windows of the
         size of the whole dimension.
         """
-        # multiple rolling dimensions are not supported by argmin/argmax
+        n_pad = np.maximum(-self._window_starts(), 0)
+        return self._shift_window_index(result, -n_pad)
+
+    @override
+    def _idxminmax(
+        self, name: str, fill_value: Any, keep_attrs: bool | None
+    ) -> DataArray:
+        if self.ndim > 1:
+            raise ValueError(
+                f"{name} is only supported for rolling along a single dimension."
+            )
         (dim,) = self.dim
-        (window,) = self.window
-        (center,) = self.center
-        # consistent with the padding in Variable.rolling_window
-        left = window // 2 if center else window - 1
-        n_pad = np.maximum(left - np.arange(self.obj.sizes[dim]), 0)
-        if not n_pad.any():
-            return result
-        axis = result.get_axis_num(dim)
-        n_pad = n_pad.reshape((-1,) + (1,) * (result.ndim - axis - 1))
-        n_pad = duck_array_ops.astype(n_pad, result.dtype)
-        return result.copy(data=result.data - n_pad)
+        if dim not in self.obj.coords:
+            raise KeyError(
+                f"Dimension {dim!r} is not one of the coordinates {tuple(self.obj.coords)}"
+            )
+
+        argname = name.replace("idx", "arg")
+        index = getattr(self, argname)(keep_attrs=keep_attrs)
+        # windows with fewer than min_periods values are NaN
+        valid = index.notnull()
+        # absolute position along the rolling dimension
+        index = self._shift_window_index(
+            index.fillna(0), np.maximum(self._window_starts(), 0)
+        )
+        index = index.astype(int)
+
+        result = computation._take_coord_labels(self.obj, dim, index)
+        if is_chunked_array(valid.data) or not valid.all():
+            result = result.where(valid, fill_value)
+        result.attrs = index.attrs
+        return result
 
     def _array_reduce_impl(
         self,
@@ -998,6 +1132,17 @@ class DatasetRolling(Rolling["Dataset"]):
     def _counts(self, keep_attrs: bool | None) -> Dataset:
         return self._dataset_implementation(
             DataArrayRolling._counts, keep_attrs=keep_attrs
+        )
+
+    @override
+    def _idxminmax(
+        self, name: str, fill_value: Any, keep_attrs: bool | None
+    ) -> Dataset:
+        return self._dataset_implementation(
+            functools.partial(
+                DataArrayRolling._idxminmax, name=name, fill_value=fill_value
+            ),
+            keep_attrs=keep_attrs,
         )
 
     def _array_reduce(

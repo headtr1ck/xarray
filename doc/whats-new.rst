@@ -13,6 +13,11 @@ v2026.09.1 (unreleased)
 
 New Features
 ~~~~~~~~~~~~
+- Added ``idxmin`` and ``idxmax`` to :py:class:`~computation.rolling.DataArrayRolling`
+  and :py:class:`~computation.rolling.DatasetRolling`, which return the coordinate
+  label of the minimum or maximum of each window, e.g. ``da.cumulative("time").idxmax()``
+  (:issue:`11336`).
+  By `Michael Niklas <https://github.com/headtr1ck>`_.
 - :py:class:`~xarray.Variable` is now generic in the type of its dimension
   names, like :py:class:`~xarray.NamedArray`: it is defined as
   ``class Variable(NamedArray[Any, Any, DimType_co])``, so static type checkers
